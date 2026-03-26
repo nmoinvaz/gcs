@@ -100,12 +100,12 @@ pub fn do_sync(
 ) -> Result<()> {
     // Resolve file list and manifest entries.
     let (manifest_files, all_paths, pull_paths) = if !arg_files.is_empty() {
-        let entries: Vec<ManifestFile> = arg_files
+        let normalized: Vec<String> = arg_files.iter().map(|p| config.relative_path(p)).collect();
+        let entries: Vec<ManifestFile> = normalized
             .iter()
             .map(|p| Manifest::entry(config, p, None))
             .collect();
-        let paths = arg_files.to_vec();
-        (entries, paths.clone(), paths)
+        (entries, normalized.clone(), normalized)
     } else if let Some(id) = gist_id {
         let manifest = read_manifest(client, id, config)?
             .context("No manifest found in gist")?;
@@ -237,7 +237,7 @@ pub fn do_add(
     let existing_paths: HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
     let mut added = Vec::new();
     for f in files {
-        let normalized = f.strip_prefix("./").unwrap_or(f).to_string();
+        let normalized = config.relative_path(f);
         if !existing_paths.contains(&normalized) {
             entries.push(Manifest::entry(config, &normalized, platform));
             added.push(normalized);
@@ -300,7 +300,7 @@ pub fn do_remove(
 
     let remove_set: HashSet<String> = files
         .iter()
-        .map(|f| f.strip_prefix("./").unwrap_or(f).to_string())
+        .map(|f| config.relative_path(f))
         .collect();
 
     let remaining: Vec<ManifestFile> = manifest

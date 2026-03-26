@@ -11,9 +11,11 @@ pub struct ProjectConfig {
 impl ProjectConfig {
     pub fn new(name: Option<String>, root: Option<PathBuf>, private: bool) -> Result<Self> {
         let root = match root {
-            Some(r) => r,
+            Some(r) => expand_tilde(&r),
             None => git_toplevel().unwrap_or_else(|| std::env::current_dir().unwrap()),
         };
+        // Canonicalize to resolve symlinks, trailing slashes, etc.
+        let root = root.canonicalize().unwrap_or(root);
         let name = name.unwrap_or_else(|| {
             root.file_name()
                 .unwrap_or_default()
@@ -33,6 +35,17 @@ impl ProjectConfig {
 
     pub fn manifest_name(&self) -> String {
         format!(".{}-config-sync.yaml", self.name)
+    }
+
+    /// Make a path relative to the project root, stripping the root prefix
+    /// and any leading ./ or /.
+    pub fn relative_path(&self, path: &str) -> String {
+        let root_str = self.root.to_string_lossy();
+        let stripped = path
+            .strip_prefix(root_str.as_ref())
+            .or_else(|| path.strip_prefix("./"))
+            .unwrap_or(path);
+        stripped.strip_prefix('/').unwrap_or(stripped).to_string()
     }
 
     /// Convert a local path to a gist-safe filename using _ as directory separator.
@@ -58,6 +71,16 @@ impl ProjectConfig {
             None
         }
     }
+}
+
+fn expand_tilde(path: &PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if s.starts_with("~/") || s == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(s.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+    path.clone()
 }
 
 fn git_toplevel() -> Option<PathBuf> {
