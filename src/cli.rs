@@ -29,6 +29,10 @@ pub enum Command {
     },
     /// Add files to the tracked set and push them
     Add {
+        /// Mark these files as specific to the current platform
+        #[arg(long)]
+        platform: bool,
+
         /// Files to add, relative to root
         files: Vec<String>,
     },

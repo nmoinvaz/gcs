@@ -21,8 +21,8 @@ fn main() -> Result<()> {
     let gist_id = client.find_gist(&config.gist_description())?;
 
     match cli.command {
-        Some(Command::Add { files }) => {
-            sync::do_add(&client, &config, &files, gist_id.as_deref())?;
+        Some(Command::Add { files, platform }) => {
+            sync::do_add(&client, &config, &files, platform, gist_id.as_deref())?;
         }
         Some(Command::Remove { files }) => {
             sync::do_remove(&client, &config, &files, gist_id.as_deref())?;

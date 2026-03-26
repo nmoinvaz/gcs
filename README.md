@@ -23,7 +23,7 @@ gcs [options] [command] [files...]
 | Command | Description |
 |---------|-------------|
 | `sync` | Sync files with the gist (default) |
-| `add <files>` | Add files to the tracked set and push them |
+| `add [--platform] <files>` | Add files to the tracked set and push them |
 | `remove <files>` | Remove files from the tracked set and delete from gist |
 | `delete` | Delete the entire config gist |
 
@@ -54,6 +54,15 @@ Add another file later:
 ```
 gcs add .vscode/launch.json
 ```
+
+Add a file that only applies to the current platform:
+
+```
+gcs add --platform .vscode/cmake-variants.yaml
+```
+
+The manifest records the platform automatically. When syncing on a
+different OS, platform-specific files are skipped.
 
 Stop tracking a file:
 

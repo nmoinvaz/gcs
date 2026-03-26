@@ -12,27 +12,31 @@ pub struct Manifest {
     pub files: Vec<ManifestFile>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestFile {
     pub path: String,
     pub gist: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 impl Manifest {
-    pub fn new(config: &ProjectConfig, paths: &[String]) -> Self {
-        let files = paths
-            .iter()
-            .map(|p| ManifestFile {
-                path: p.clone(),
-                gist: config.gist_filename(p),
-            })
-            .collect();
+    pub fn new(config: &ProjectConfig, files: &[ManifestFile]) -> Self {
         Self {
             name: config.name.clone(),
             description: "Configuration files synced by config-sync".to_string(),
             repo: config.repo_url(),
             url: "https://github.com/nmoinvaz/gcs".to_string(),
-            files,
+            files: files.to_vec(),
+        }
+    }
+
+    /// Create a manifest entry for a path with an optional platform.
+    pub fn entry(config: &ProjectConfig, path: &str, platform: Option<&str>) -> ManifestFile {
+        ManifestFile {
+            path: path.to_string(),
+            gist: config.gist_filename(path),
+            platform: platform.map(|s| s.to_string()),
         }
     }
 
@@ -44,7 +48,29 @@ impl Manifest {
         serde_yaml::from_str(yaml).ok()
     }
 
+    /// All paths in the manifest.
     pub fn paths(&self) -> Vec<String> {
         self.files.iter().map(|f| f.path.clone()).collect()
+    }
+
+    /// Paths that match the current platform (or have no platform restriction).
+    pub fn paths_for_current_platform(&self) -> Vec<String> {
+        let current = current_platform();
+        self.files
+            .iter()
+            .filter(|f| f.platform.is_none() || f.platform.as_deref() == Some(current))
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
+}
+
+/// Returns the current platform name: "macos", "linux", or "windows".
+pub fn current_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "linux" => "linux",
+        "windows" => "windows",
+        other => other,
     }
 }
