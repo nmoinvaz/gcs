@@ -1,0 +1,15 @@
+[package]
+name = "gcs"
+version = "0.1.0"
+edition = "2021"
+description = "Sync project config files to/from GitHub gists"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
