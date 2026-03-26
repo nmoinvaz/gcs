@@ -310,6 +310,24 @@ pub fn do_remove(
 }
 
 // -------------------------------------------------------------------------
+//  cleanup
+// -------------------------------------------------------------------------
+
+pub fn do_cleanup(
+    client: &GistClient,
+    config: &ProjectConfig,
+    gist_id: Option<&str>,
+) -> Result<()> {
+    let id = gist_id.context("No gist found")?;
+    let manifest = read_manifest(client, id, config)?
+        .context("No manifest found in gist")?;
+    let paths = manifest.paths();
+    remove_stale_files(client, id, config, &paths)?;
+    println!("Gist: https://gist.github.com/{id}");
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
 //  delete
 // -------------------------------------------------------------------------
 

@@ -37,6 +37,8 @@ pub enum Command {
         /// Files to remove, relative to root
         files: Vec<String>,
     },
+    /// Remove gist files not listed in the manifest
+    Cleanup,
     /// Delete the entire config gist
     Delete,
 }

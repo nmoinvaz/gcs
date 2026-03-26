@@ -27,6 +27,9 @@ fn main() -> Result<()> {
         Some(Command::Remove { files }) => {
             sync::do_remove(&client, &config, &files, gist_id.as_deref())?;
         }
+        Some(Command::Cleanup) => {
+            sync::do_cleanup(&client, &config, gist_id.as_deref())?;
+        }
         Some(Command::Delete) => {
             sync::do_delete(&client, gist_id.as_deref())?;
         }
