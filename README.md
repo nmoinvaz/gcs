@@ -76,6 +76,11 @@ Delete the gist entirely:
 gcs delete
 ```
 
+## Secret scanning
+
+Before pushing files to a gist, `gcs` scans them for potential secrets
+(API keys, tokens, passwords, etc.) and aborts if any are found.
+
 ## How it works
 
 Each project gets a single gist identified by the description
