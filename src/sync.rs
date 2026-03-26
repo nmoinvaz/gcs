@@ -7,6 +7,46 @@ use crate::config::ProjectConfig;
 use crate::gist::GistClient;
 use crate::manifest::{current_platform, Manifest, ManifestFile};
 
+/// Scan files for secrets and bail if any are found.
+fn check_secrets(config: &ProjectConfig, paths: &[String]) -> Result<()> {
+    let patterns = secretscan::patterns::get_all_patterns();
+    let mut all_findings = Vec::new();
+
+    for path in paths {
+        let full = config.root.join(path);
+        let content = match fs::read_to_string(&full) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for (line_num, line) in content.lines().enumerate() {
+            for (name, regex) in patterns.iter() {
+                if regex.is_match(line) {
+                    all_findings.push(format!(
+                        "  {}:{} [{}] {}",
+                        path,
+                        line_num + 1,
+                        name,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+    }
+
+    if !all_findings.is_empty() {
+        eprintln!("Potential secrets found:");
+        for f in &all_findings {
+            eprintln!("{f}");
+        }
+        anyhow::bail!(
+            "Aborting — {} potential secret(s) detected. Review and remove them before pushing.",
+            all_findings.len()
+        );
+    }
+    Ok(())
+}
+
+
 /// Read the manifest from an existing gist.
 fn read_manifest(client: &GistClient, gist_id: &str, config: &ProjectConfig) -> Result<Option<Manifest>> {
     let gist = client.get_gist(gist_id)?;
@@ -146,6 +186,7 @@ pub fn do_sync(
 
     match direction {
         Direction::Create => {
+            check_secrets(config, &local_files)?;
             let manifest = Manifest::new(config, &manifest_files);
             let files = build_file_map(config, &local_files, &manifest);
             println!("Creating gist: {}", config.gist_description());
@@ -154,6 +195,7 @@ pub fn do_sync(
             println!("Gist: https://gist.github.com/{id}");
         }
         Direction::Push => {
+            check_secrets(config, &local_files)?;
             let id = gist_id.unwrap();
             println!("Local is newer — pushing to gist {id}");
             let manifest = Manifest::new(config, &manifest_files);
@@ -245,6 +287,7 @@ pub fn do_add(
     }
 
     let manifest = Manifest::new(config, &entries);
+    check_secrets(config, &added)?;
 
     if let Some(id) = gist_id {
         let mut updates: HashMap<String, Option<String>> = HashMap::new();
