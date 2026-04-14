@@ -45,4 +45,6 @@ pub enum Command {
     Cleanup,
     /// Delete the entire config gist
     Delete,
+    /// Open the project's gist in a web browser
+    Open,
 }

@@ -26,6 +26,7 @@ gcs [options] [command] [files...]
 | `add [--platform] <files>` | Add files to the tracked set and push them |
 | `remove <files>` | Remove files from the tracked set and delete from gist |
 | `delete` | Delete the entire config gist |
+| `open` | Open the project's gist in a web browser |
 
 ### Options
 

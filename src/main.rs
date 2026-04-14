@@ -33,6 +33,9 @@ fn main() -> Result<()> {
         Some(Command::Delete) => {
             sync::do_delete(&client, gist_id.as_deref())?;
         }
+        Some(Command::Open) => {
+            sync::do_open(gist_id.as_deref())?;
+        }
         Some(Command::Sync { files }) => {
             sync::do_sync(&client, &config, &files, gist_id.as_deref())?;
         }

@@ -405,3 +405,28 @@ pub fn do_delete(client: &GistClient, gist_id: Option<&str>) -> Result<()> {
     println!("Deleted gist: https://gist.github.com/{id}");
     Ok(())
 }
+
+// -------------------------------------------------------------------------
+//  open
+// -------------------------------------------------------------------------
+
+pub fn do_open(gist_id: Option<&str>) -> Result<()> {
+    let id = gist_id.context("No gist found")?;
+    let url = format!("https://gist.github.com/{id}");
+    println!("Opening {url}");
+
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+
+    std::process::Command::new(program)
+        .arg(&url)
+        .status()
+        .with_context(|| format!("Failed to launch {program}"))?;
+
+    Ok(())
+}
