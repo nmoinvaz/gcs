@@ -66,6 +66,18 @@ fn read_manifest(
     }
 }
 
+/// Check whether a gist is private (i.e. not public).
+fn is_gist_private(client: &GistClient, gist_id: &str) -> Result<bool> {
+    let gist = client.get_gist(gist_id)?;
+    Ok(!gist["public"].as_bool().unwrap_or(true))
+}
+
+/// Print the gist URL, marking private gists.
+fn print_gist_url(id: &str, private: bool) {
+    let suffix = if private { " (private)" } else { "" };
+    println!("Gist: https://gist.github.com/{id}{suffix}");
+}
+
 /// Read a local file's modification time as a UTC timestamp.
 fn local_mtime(config: &ProjectConfig, path: &str) -> Option<DateTime<Utc>> {
     let full = config.root.join(path);
@@ -266,7 +278,7 @@ pub fn do_sync(
         pull_indices.len(),
         in_sync_count
     );
-    println!("Gist: https://gist.github.com/{id}");
+    print_gist_url(id, is_gist_private(client, id)?);
 
     Ok(())
 }
@@ -311,7 +323,7 @@ fn create_new_gist(
         local_files.len(),
         local_files.join(" ")
     );
-    println!("Gist: https://gist.github.com/{id}");
+    print_gist_url(&id, !config.public);
     Ok(())
 }
 
@@ -375,7 +387,7 @@ pub fn do_add(
             }
         }
         client.update_files(id, &updates)?;
-        println!("Gist: https://gist.github.com/{id}");
+        print_gist_url(id, is_gist_private(client, id)?);
     } else {
         let local_files: Vec<String> = added
             .iter()
@@ -389,7 +401,7 @@ pub fn do_add(
             let suffix = platform.map(|p| format!(" ({p})")).unwrap_or_default();
             println!("  added {f}{suffix}");
         }
-        println!("Gist: https://gist.github.com/{id}");
+        print_gist_url(&id, !config.public);
     }
 
     Ok(())
@@ -430,7 +442,7 @@ pub fn do_remove(
     updates.insert(config.manifest_name(), Some(new_manifest.to_yaml()));
 
     client.update_files(id, &updates)?;
-    println!("Gist: https://gist.github.com/{id}");
+    print_gist_url(id, is_gist_private(client, id)?);
 
     Ok(())
 }
@@ -448,7 +460,7 @@ pub fn do_cleanup(
     let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
     let paths = manifest.paths();
     remove_stale_files(client, id, config, &paths)?;
-    println!("Gist: https://gist.github.com/{id}");
+    print_gist_url(id, is_gist_private(client, id)?);
     Ok(())
 }
 
