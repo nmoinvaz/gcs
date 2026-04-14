@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -63,13 +62,6 @@ impl GistClient {
             .context("GitHub API error fetching gist")?
             .json()
             .context("Failed to parse gist response")
-    }
-
-    /// Get the updated_at timestamp from a gist.
-    pub fn get_updated_at(&self, gist: &Value) -> Option<DateTime<Utc>> {
-        gist["updated_at"]
-            .as_str()
-            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
     }
 
     /// Extract a file's content from a gist response.

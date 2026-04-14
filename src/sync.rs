@@ -2,10 +2,16 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 
 use crate::config::ProjectConfig;
 use crate::gist::GistClient;
 use crate::manifest::{current_platform, Manifest, ManifestFile};
+
+/// Tolerance for comparing local mtime against the manifest timestamp.
+/// Accounts for coarser filesystem mtime resolution (e.g. FAT's two-second
+/// granularity) and minor clock drift between machines.
+const MTIME_TOLERANCE_SECS: i64 = 1;
 
 /// Scan files for secrets and bail if any are found.
 fn check_secrets(config: &ProjectConfig, paths: &[String]) -> Result<()> {
@@ -60,31 +66,24 @@ fn read_manifest(
     }
 }
 
-/// Get the newest mtime across a set of local files, returning (existing_files, max_epoch).
-fn local_file_state(
-    config: &ProjectConfig,
-    paths: &[String],
-) -> (Vec<String>, Option<DateTime<Utc>>) {
-    let mut existing = Vec::new();
-    let mut max_epoch: Option<DateTime<Utc>> = None;
+/// Read a local file's modification time as a UTC timestamp.
+fn local_mtime(config: &ProjectConfig, path: &str) -> Option<DateTime<Utc>> {
+    let full = config.root.join(path);
+    let meta = fs::metadata(&full).ok()?;
+    let mtime = meta.modified().ok()?;
+    Some(DateTime::<Utc>::from(mtime))
+}
 
-    for path in paths {
-        let full = config.root.join(path);
-        if full.is_file() {
-            existing.push(path.clone());
-            if let Ok(meta) = fs::metadata(&full) {
-                if let Ok(mtime) = meta.modified() {
-                    let dt: DateTime<Utc> = mtime.into();
-                    max_epoch = Some(match max_epoch {
-                        Some(prev) if prev > dt => prev,
-                        _ => dt,
-                    });
-                }
-            }
-        }
-    }
-
-    (existing, max_epoch)
+/// Set a local file's modification time to the given UTC timestamp.
+fn set_local_mtime(path: &Path, time: DateTime<Utc>) -> Result<()> {
+    let system_time: std::time::SystemTime = time.into();
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .with_context(|| format!("Failed to open {} to set mtime", path.display()))?;
+    file.set_modified(system_time)
+        .with_context(|| format!("Failed to set mtime on {}", path.display()))?;
+    Ok(())
 }
 
 /// Build the file map for creating or pushing to a gist.
@@ -144,121 +143,175 @@ pub fn do_sync(
     arg_files: &[String],
     gist_id: Option<&str>,
 ) -> Result<()> {
-    // Resolve file list and manifest entries.
-    let (manifest_files, all_paths, pull_paths) = if !arg_files.is_empty() {
-        let normalized: Vec<String> = arg_files.iter().map(|p| config.relative_path(p)).collect();
-        let entries: Vec<ManifestFile> = normalized
-            .iter()
-            .map(|p| Manifest::entry(config, p, None))
-            .collect();
-        (entries, normalized.clone(), normalized)
-    } else if let Some(id) = gist_id {
-        let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
-        let all = manifest.paths();
-        let pull = manifest.paths_for_current_platform();
-        println!(
-            "Read {} file(s) from manifest ({} for this platform)",
-            all.len(),
-            pull.len()
-        );
-        (manifest.files.clone(), all, pull)
-    } else {
-        anyhow::bail!("No files specified and no manifest found.");
+    // No gist yet: create one from the files supplied on the command line.
+    let Some(id) = gist_id else {
+        return create_new_gist(client, config, arg_files);
     };
 
-    // For push direction, use all paths. For pull, use platform-filtered paths.
-    let (local_files, local_max) = local_file_state(config, &pull_paths);
+    let mut manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
 
-    if local_files.is_empty() && gist_id.is_none() {
-        println!("No tracked config files found and no remote gist exists.");
-        return Ok(());
-    }
+    // Optionally narrow the sync to a specific subset. Files listed on the
+    // command line must already be tracked — adding new files is `gcs add`.
+    let focus: Option<HashSet<String>> = if arg_files.is_empty() {
+        None
+    } else {
+        let tracked: HashSet<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
+        let mut set = HashSet::new();
+        for f in arg_files {
+            let norm = config.relative_path(f);
+            if !tracked.contains(&norm) {
+                anyhow::bail!("{norm} is not tracked. Use `gcs add` to track new files.");
+            }
+            set.insert(norm);
+        }
+        Some(set)
+    };
 
-    enum Direction {
-        Create,
-        Push,
+    let current = current_platform();
+
+    // Classify each relevant manifest entry as push, pull, or in-sync.
+    enum Action {
+        Push(DateTime<Utc>),
         Pull,
         InSync,
     }
 
-    let direction = match gist_id {
-        None => Direction::Create,
-        Some(_) if local_files.is_empty() => Direction::Pull,
-        Some(id) => {
-            let gist = client.get_gist(id)?;
-            let remote_time = client.get_updated_at(&gist);
-            match (local_max, remote_time) {
-                (Some(local), Some(remote)) if local > remote => Direction::Push,
-                (Some(local), Some(remote)) if remote > local => Direction::Pull,
-                (Some(_), Some(_)) => Direction::InSync,
-                (Some(_), None) => Direction::Push,
-                (None, Some(_)) => Direction::Pull,
-                _ => Direction::InSync,
+    let mut plan: Vec<(usize, Action)> = Vec::new();
+    for (idx, entry) in manifest.files.iter().enumerate() {
+        let platform_match = entry.platform.is_none() || entry.platform.as_deref() == Some(current);
+        if !platform_match {
+            continue;
+        }
+        if let Some(ref focus) = focus {
+            if !focus.contains(&entry.path) {
+                continue;
             }
         }
-    };
 
-    match direction {
-        Direction::Create => {
-            check_secrets(config, &local_files)?;
-            let manifest = Manifest::new(config, &manifest_files);
-            let files = build_file_map(config, &local_files, &manifest);
-            println!("Creating gist: {}", config.gist_description());
-            let id = client.create_gist(&config.gist_description(), config.public, &files)?;
-            println!(
-                "Pushed {} file(s): {}",
-                local_files.len(),
-                local_files.join(" ")
-            );
-            println!("Gist: https://gist.github.com/{id}");
-        }
-        Direction::Push => {
-            check_secrets(config, &local_files)?;
-            let id = gist_id.unwrap();
-            println!("Local is newer — pushing to gist {id}");
-            let manifest = Manifest::new(config, &manifest_files);
-            // Push only files for this platform (or universal).
-            let file_map = build_file_map(config, &local_files, &manifest);
-            let updates: HashMap<String, Option<String>> =
-                file_map.into_iter().map(|(k, v)| (k, Some(v))).collect();
-            client.update_files(id, &updates)?;
-            for f in &local_files {
-                println!("  pushed {f}");
-            }
-            remove_stale_files(client, id, config, &all_paths)?;
-            println!("Pushed {} file(s)", local_files.len());
-            println!("Gist: https://gist.github.com/{id}");
-        }
-        Direction::Pull => {
-            let id = gist_id.unwrap();
-            println!("Remote is newer — pulling from gist {id}");
-            let gist = client.get_gist(id)?;
-            let mut pulled = 0;
-            // Only pull files for this platform.
-            for path in &pull_paths {
-                let gist_name = config.gist_filename(path);
-                if let Some(content) = client.get_file_content(&gist, &gist_name) {
-                    let target = config.root.join(path);
-                    if let Some(parent) = target.parent() {
-                        fs::create_dir_all(parent)
-                            .with_context(|| format!("Failed to create directory for {path}"))?;
-                    }
-                    fs::write(&target, format!("{content}\n"))
-                        .with_context(|| format!("Failed to write {path}"))?;
-                    println!("  pulled {gist_name} -> {path}");
-                    pulled += 1;
+        let action = match local_mtime(config, &entry.path) {
+            None => Action::Pull,
+            Some(local) => {
+                let delta = (local - entry.updated_at).num_seconds();
+                if delta > MTIME_TOLERANCE_SECS {
+                    Action::Push(local)
+                } else if delta < -MTIME_TOLERANCE_SECS {
+                    Action::Pull
+                } else {
+                    Action::InSync
                 }
             }
-            println!("Pulled {pulled} file(s)");
-            println!("Gist: https://gist.github.com/{id}");
-        }
-        Direction::InSync => {
-            let id = gist_id.unwrap();
-            println!("Already in sync.");
-            println!("Gist: https://gist.github.com/{id}");
+        };
+        plan.push((idx, action));
+    }
+
+    let mut push_indices: Vec<(usize, DateTime<Utc>)> = Vec::new();
+    let mut pull_indices: Vec<usize> = Vec::new();
+    let mut in_sync_count = 0usize;
+    for (idx, action) in plan {
+        match action {
+            Action::Push(ts) => push_indices.push((idx, ts)),
+            Action::Pull => pull_indices.push(idx),
+            Action::InSync => in_sync_count += 1,
         }
     }
 
+    // Pull first so a failed push doesn't leave local out of date.
+    if !pull_indices.is_empty() {
+        let gist = client.get_gist(id)?;
+        for idx in &pull_indices {
+            let entry = &manifest.files[*idx];
+            let Some(content) = client.get_file_content(&gist, &entry.gist) else {
+                eprintln!("  warning: {} not found in gist", entry.gist);
+                continue;
+            };
+            let target = config.root.join(&entry.path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create directory for {}", entry.path))?;
+            }
+            fs::write(&target, format!("{content}\n"))
+                .with_context(|| format!("Failed to write {}", entry.path))?;
+            set_local_mtime(&target, entry.updated_at)?;
+            println!("  pulled {} -> {}", entry.gist, entry.path);
+        }
+    }
+
+    if !push_indices.is_empty() {
+        let push_paths: Vec<String> = push_indices
+            .iter()
+            .map(|(idx, _)| manifest.files[*idx].path.clone())
+            .collect();
+        check_secrets(config, &push_paths)?;
+
+        for (idx, ts) in &push_indices {
+            manifest.files[*idx].updated_at = *ts;
+        }
+
+        let mut updates: HashMap<String, Option<String>> = HashMap::new();
+        updates.insert(config.manifest_name(), Some(manifest.to_yaml()));
+        for (idx, _) in &push_indices {
+            let entry = &manifest.files[*idx];
+            let full = config.root.join(&entry.path);
+            let content = fs::read_to_string(&full)
+                .with_context(|| format!("Failed to read {}", entry.path))?;
+            updates.insert(entry.gist.clone(), Some(content));
+            println!("  pushed {}", entry.path);
+        }
+        client.update_files(id, &updates)?;
+    }
+
+    println!(
+        "Summary: {} pushed, {} pulled, {} already in sync",
+        push_indices.len(),
+        pull_indices.len(),
+        in_sync_count
+    );
+    println!("Gist: https://gist.github.com/{id}");
+
+    Ok(())
+}
+
+/// Create a new gist from the files specified on the command line.
+fn create_new_gist(
+    client: &GistClient,
+    config: &ProjectConfig,
+    arg_files: &[String],
+) -> Result<()> {
+    if arg_files.is_empty() {
+        anyhow::bail!("No files specified and no manifest found.");
+    }
+
+    let normalized: Vec<String> = arg_files.iter().map(|p| config.relative_path(p)).collect();
+    let entries: Vec<ManifestFile> = normalized
+        .iter()
+        .map(|p| {
+            let ts = local_mtime(config, p).unwrap_or_else(Utc::now);
+            Manifest::entry(config, p, None, ts)
+        })
+        .collect();
+
+    let manifest = Manifest::new(config, &entries);
+    let local_files: Vec<String> = normalized
+        .iter()
+        .filter(|p| config.root.join(p).is_file())
+        .cloned()
+        .collect();
+
+    if local_files.is_empty() {
+        println!("No tracked config files found and no remote gist exists.");
+        return Ok(());
+    }
+
+    check_secrets(config, &local_files)?;
+    let files = build_file_map(config, &local_files, &manifest);
+    println!("Creating gist: {}", config.gist_description());
+    let id = client.create_gist(&config.gist_description(), config.public, &files)?;
+    println!(
+        "Pushed {} file(s): {}",
+        local_files.len(),
+        local_files.join(" ")
+    );
+    println!("Gist: https://gist.github.com/{id}");
     Ok(())
 }
 
@@ -297,7 +350,8 @@ pub fn do_add(
     for f in files {
         let normalized = config.relative_path(f);
         if !existing_paths.contains(&normalized) {
-            entries.push(Manifest::entry(config, &normalized, platform));
+            let ts = local_mtime(config, &normalized).unwrap_or_else(Utc::now);
+            entries.push(Manifest::entry(config, &normalized, platform, ts));
             added.push(normalized);
         }
     }
@@ -323,8 +377,11 @@ pub fn do_add(
         client.update_files(id, &updates)?;
         println!("Gist: https://gist.github.com/{id}");
     } else {
-        let all_paths = manifest.paths();
-        let (local_files, _) = local_file_state(config, &all_paths);
+        let local_files: Vec<String> = added
+            .iter()
+            .filter(|p| config.root.join(p).is_file())
+            .cloned()
+            .collect();
         let file_map = build_file_map(config, &local_files, &manifest);
         println!("Creating gist: {}", config.gist_description());
         let id = client.create_gist(&config.gist_description(), config.public, &file_map)?;

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ProjectConfig;
@@ -18,6 +19,12 @@ pub struct ManifestFile {
     pub gist: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    #[serde(default = "epoch")]
+    pub updated_at: DateTime<Utc>,
+}
+
+fn epoch() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap()
 }
 
 impl Manifest {
@@ -31,12 +38,18 @@ impl Manifest {
         }
     }
 
-    /// Create a manifest entry for a path with an optional platform.
-    pub fn entry(config: &ProjectConfig, path: &str, platform: Option<&str>) -> ManifestFile {
+    /// Create a manifest entry for a path with an optional platform and timestamp.
+    pub fn entry(
+        config: &ProjectConfig,
+        path: &str,
+        platform: Option<&str>,
+        updated_at: DateTime<Utc>,
+    ) -> ManifestFile {
         ManifestFile {
             path: path.to_string(),
             gist: config.gist_filename(path),
             platform: platform.map(|s| s.to_string()),
+            updated_at,
         }
     }
 
@@ -51,16 +64,6 @@ impl Manifest {
     /// All paths in the manifest.
     pub fn paths(&self) -> Vec<String> {
         self.files.iter().map(|f| f.path.clone()).collect()
-    }
-
-    /// Paths that match the current platform (or have no platform restriction).
-    pub fn paths_for_current_platform(&self) -> Vec<String> {
-        let current = current_platform();
-        self.files
-            .iter()
-            .filter(|f| f.platform.is_none() || f.platform.as_deref() == Some(current))
-            .map(|f| f.path.clone())
-            .collect()
     }
 }
 
