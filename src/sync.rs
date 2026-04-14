@@ -46,9 +46,12 @@ fn check_secrets(config: &ProjectConfig, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
-
 /// Read the manifest from an existing gist.
-fn read_manifest(client: &GistClient, gist_id: &str, config: &ProjectConfig) -> Result<Option<Manifest>> {
+fn read_manifest(
+    client: &GistClient,
+    gist_id: &str,
+    config: &ProjectConfig,
+) -> Result<Option<Manifest>> {
     let gist = client.get_gist(gist_id)?;
     let manifest_name = config.manifest_name();
     match client.get_file_content(&gist, &manifest_name) {
@@ -58,7 +61,10 @@ fn read_manifest(client: &GistClient, gist_id: &str, config: &ProjectConfig) -> 
 }
 
 /// Get the newest mtime across a set of local files, returning (existing_files, max_epoch).
-fn local_file_state(config: &ProjectConfig, paths: &[String]) -> (Vec<String>, Option<DateTime<Utc>>) {
+fn local_file_state(
+    config: &ProjectConfig,
+    paths: &[String],
+) -> (Vec<String>, Option<DateTime<Utc>>) {
     let mut existing = Vec::new();
     let mut max_epoch: Option<DateTime<Utc>> = None;
 
@@ -147,11 +153,14 @@ pub fn do_sync(
             .collect();
         (entries, normalized.clone(), normalized)
     } else if let Some(id) = gist_id {
-        let manifest = read_manifest(client, id, config)?
-            .context("No manifest found in gist")?;
+        let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
         let all = manifest.paths();
         let pull = manifest.paths_for_current_platform();
-        println!("Read {} file(s) from manifest ({} for this platform)", all.len(), pull.len());
+        println!(
+            "Read {} file(s) from manifest ({} for this platform)",
+            all.len(),
+            pull.len()
+        );
         (manifest.files.clone(), all, pull)
     } else {
         anyhow::bail!("No files specified and no manifest found.");
@@ -165,22 +174,27 @@ pub fn do_sync(
         return Ok(());
     }
 
-    enum Direction { Create, Push, Pull, InSync }
+    enum Direction {
+        Create,
+        Push,
+        Pull,
+        InSync,
+    }
 
-    let direction = if gist_id.is_none() {
-        Direction::Create
-    } else if local_files.is_empty() {
-        Direction::Pull
-    } else {
-        let gist = client.get_gist(gist_id.unwrap())?;
-        let remote_time = client.get_updated_at(&gist);
-        match (local_max, remote_time) {
-            (Some(local), Some(remote)) if local > remote => Direction::Push,
-            (Some(local), Some(remote)) if remote > local => Direction::Pull,
-            (Some(_), Some(_)) => Direction::InSync,
-            (Some(_), None) => Direction::Push,
-            (None, Some(_)) => Direction::Pull,
-            _ => Direction::InSync,
+    let direction = match gist_id {
+        None => Direction::Create,
+        Some(_) if local_files.is_empty() => Direction::Pull,
+        Some(id) => {
+            let gist = client.get_gist(id)?;
+            let remote_time = client.get_updated_at(&gist);
+            match (local_max, remote_time) {
+                (Some(local), Some(remote)) if local > remote => Direction::Push,
+                (Some(local), Some(remote)) if remote > local => Direction::Pull,
+                (Some(_), Some(_)) => Direction::InSync,
+                (Some(_), None) => Direction::Push,
+                (None, Some(_)) => Direction::Pull,
+                _ => Direction::InSync,
+            }
         }
     };
 
@@ -191,7 +205,11 @@ pub fn do_sync(
             let files = build_file_map(config, &local_files, &manifest);
             println!("Creating gist: {}", config.gist_description());
             let id = client.create_gist(&config.gist_description(), config.public, &files)?;
-            println!("Pushed {} file(s): {}", local_files.len(), local_files.join(" "));
+            println!(
+                "Pushed {} file(s): {}",
+                local_files.len(),
+                local_files.join(" ")
+            );
             println!("Gist: https://gist.github.com/{id}");
         }
         Direction::Push => {
@@ -201,10 +219,8 @@ pub fn do_sync(
             let manifest = Manifest::new(config, &manifest_files);
             // Push only files for this platform (or universal).
             let file_map = build_file_map(config, &local_files, &manifest);
-            let updates: HashMap<String, Option<String>> = file_map
-                .into_iter()
-                .map(|(k, v)| (k, Some(v)))
-                .collect();
+            let updates: HashMap<String, Option<String>> =
+                file_map.into_iter().map(|(k, v)| (k, Some(v))).collect();
             client.update_files(id, &updates)?;
             for f in &local_files {
                 println!("  pushed {f}");
@@ -295,8 +311,8 @@ pub fn do_add(
         for f in &added {
             let full = config.root.join(f);
             if full.is_file() {
-                let content = fs::read_to_string(&full)
-                    .with_context(|| format!("Failed to read {f}"))?;
+                let content =
+                    fs::read_to_string(&full).with_context(|| format!("Failed to read {f}"))?;
                 updates.insert(config.gist_filename(f), Some(content));
                 let suffix = platform.map(|p| format!(" ({p})")).unwrap_or_default();
                 println!("  added {f}{suffix}");
@@ -338,13 +354,9 @@ pub fn do_remove(
 
     let id = gist_id.context("No gist found")?;
 
-    let manifest = read_manifest(client, id, config)?
-        .context("No manifest found in gist")?;
+    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
 
-    let remove_set: HashSet<String> = files
-        .iter()
-        .map(|f| config.relative_path(f))
-        .collect();
+    let remove_set: HashSet<String> = files.iter().map(|f| config.relative_path(f)).collect();
 
     let remaining: Vec<ManifestFile> = manifest
         .files
@@ -376,8 +388,7 @@ pub fn do_cleanup(
     gist_id: Option<&str>,
 ) -> Result<()> {
     let id = gist_id.context("No gist found")?;
-    let manifest = read_manifest(client, id, config)?
-        .context("No manifest found in gist")?;
+    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
     let paths = manifest.paths();
     remove_stale_files(client, id, config, &paths)?;
     println!("Gist: https://gist.github.com/{id}");
@@ -388,10 +399,7 @@ pub fn do_cleanup(
 //  delete
 // -------------------------------------------------------------------------
 
-pub fn do_delete(
-    client: &GistClient,
-    gist_id: Option<&str>,
-) -> Result<()> {
+pub fn do_delete(client: &GistClient, gist_id: Option<&str>) -> Result<()> {
     let id = gist_id.context("No gist found")?;
     client.delete_gist(id)?;
     println!("Deleted gist: https://gist.github.com/{id}");

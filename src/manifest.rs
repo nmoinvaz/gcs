@@ -62,7 +62,6 @@ impl Manifest {
             .map(|f| f.path.clone())
             .collect()
     }
-
 }
 
 /// Returns the current platform name: "macos", "linux", or "windows".

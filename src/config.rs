@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub struct ProjectConfig {
@@ -73,14 +73,14 @@ impl ProjectConfig {
     }
 }
 
-fn expand_tilde(path: &PathBuf) -> PathBuf {
+fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if s.starts_with("~/") || s == "~" {
         if let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home).join(s.strip_prefix("~/").unwrap_or(""));
         }
     }
-    path.clone()
+    path.to_path_buf()
 }
 
 fn git_toplevel() -> Option<PathBuf> {

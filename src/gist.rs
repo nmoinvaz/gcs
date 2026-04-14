@@ -122,11 +122,7 @@ impl GistClient {
     }
 
     /// Update gist files. Use None as the value to delete a file.
-    pub fn update_files(
-        &self,
-        id: &str,
-        files: &HashMap<String, Option<String>>,
-    ) -> Result<()> {
+    pub fn update_files(&self, id: &str, files: &HashMap<String, Option<String>>) -> Result<()> {
         let mut file_map = serde_json::Map::new();
         for (name, content) in files {
             match content {
