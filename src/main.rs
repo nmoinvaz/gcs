@@ -14,6 +14,16 @@ use gist::GistClient;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if let Some(Command::Version) = cli.command {
+        println!(
+            "{} {}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
+        println!("{}", env!("CARGO_PKG_DESCRIPTION"));
+        return Ok(());
+    }
+
     let config = ProjectConfig::new(cli.name, cli.root, cli.private)?;
     let token = get_github_token()?;
     let client = GistClient::new(token)?;
@@ -36,6 +46,7 @@ fn main() -> Result<()> {
         Some(Command::Open) => {
             sync::do_open(gist_id.as_deref())?;
         }
+        Some(Command::Version) => unreachable!("handled above"),
         Some(Command::Sync { files }) => {
             sync::do_sync(&client, &config, &files, gist_id.as_deref())?;
         }

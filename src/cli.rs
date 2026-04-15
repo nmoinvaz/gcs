@@ -47,4 +47,6 @@ pub enum Command {
     Delete,
     /// Open the project's gist in a web browser
     Open,
+    /// Print version information
+    Version,
 }
