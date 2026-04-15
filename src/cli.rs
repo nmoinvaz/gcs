@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "gcs", about = "Sync project config files to/from GitHub gists")]
+#[command(
+    name = "gcs",
+    about = "Sync project config files to/from GitHub gists",
+    version
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -47,6 +51,4 @@ pub enum Command {
     Delete,
     /// Open the project's gist in a web browser
     Open,
-    /// Print version information
-    Version,
 }

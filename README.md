@@ -28,7 +28,6 @@ gcs [options] [command] [files...]
 | `cleanup` | Remove gist files not listed in the manifest |
 | `delete` | Delete the entire config gist |
 | `open` | Open the project's gist in a web browser |
-| `version` | Print version information |
 
 ### Options
 
@@ -37,6 +36,7 @@ gcs [options] [command] [files...]
 | `--name <NAME>` | Gist name prefix (default: basename of project root) |
 | `--root <DIR>` | Root directory for relative paths (default: git root or cwd) |
 | `--private` | Create the gist as secret instead of public |
+| `-V`, `--version` | Print version information |
 
 ## Examples
 
