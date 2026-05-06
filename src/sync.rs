@@ -328,6 +328,76 @@ fn create_new_gist(
 }
 
 // -------------------------------------------------------------------------
+//  restore
+// -------------------------------------------------------------------------
+
+pub fn do_restore(
+    client: &GistClient,
+    config: &ProjectConfig,
+    arg_files: &[String],
+    gist_id: Option<&str>,
+) -> Result<()> {
+    let id = gist_id.context("No gist found for this project")?;
+    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+
+    let focus: Option<HashSet<String>> = if arg_files.is_empty() {
+        None
+    } else {
+        let tracked: HashSet<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
+        let mut set = HashSet::new();
+        for f in arg_files {
+            let norm = config.relative_path(f);
+            if !tracked.contains(&norm) {
+                anyhow::bail!("{norm} is not tracked. Use `gcs add` to track new files.");
+            }
+            set.insert(norm);
+        }
+        Some(set)
+    };
+
+    let current = current_platform();
+    let targets: Vec<&ManifestFile> = manifest
+        .files
+        .iter()
+        .filter(|entry| {
+            let platform_match =
+                entry.platform.is_none() || entry.platform.as_deref() == Some(current);
+            let focus_match = focus.as_ref().is_none_or(|f| f.contains(&entry.path));
+            platform_match && focus_match
+        })
+        .collect();
+
+    if targets.is_empty() {
+        println!("No files to restore.");
+        return Ok(());
+    }
+
+    let gist = client.get_gist(id)?;
+    let mut restored = 0usize;
+    for entry in &targets {
+        let Some(content) = client.get_file_content(&gist, &entry.gist) else {
+            eprintln!("  warning: {} not found in gist", entry.gist);
+            continue;
+        };
+        let target = config.root.join(&entry.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory for {}", entry.path))?;
+        }
+        fs::write(&target, format!("{content}\n"))
+            .with_context(|| format!("Failed to write {}", entry.path))?;
+        set_local_mtime(&target, entry.updated_at)?;
+        println!("  restored {} -> {}", entry.gist, entry.path);
+        restored += 1;
+    }
+
+    println!("Summary: {restored} restored");
+    print_gist_url(id, is_gist_private(client, id)?);
+
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
 //  add
 // -------------------------------------------------------------------------
 

@@ -22,12 +22,13 @@ gcs [options] [command] [files...]
 
 | Command | Description |
 |---------|-------------|
-| `sync` | Sync files with the gist (default) |
 | `add [--platform] <files>` | Add files to the tracked set and push them |
-| `remove <files>` | Remove files from the tracked set and delete from gist |
 | `cleanup` | Remove gist files not listed in the manifest |
 | `delete` | Delete the entire config gist |
 | `open` | Open the project's gist in a web browser |
+| `remove <files>` | Remove files from the tracked set and delete from gist |
+| `restore <files>` | Overwrite local files with the gist version, ignoring mtime |
+| `sync` | Sync files with the gist (default) |
 
 ### Options
 
