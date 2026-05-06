@@ -374,7 +374,16 @@ pub fn do_restore(
 
     let gist = client.get_gist(id)?;
     let mut restored = 0usize;
+    let mut in_sync = 0usize;
     for entry in &targets {
+        // Skip when local mtime already matches the manifest timestamp.
+        if let Some(local) = local_mtime(config, &entry.path) {
+            if (local - entry.updated_at).num_seconds().abs() <= MTIME_TOLERANCE_SECS {
+                in_sync += 1;
+                continue;
+            }
+        }
+
         let Some(content) = client.get_file_content(&gist, &entry.gist) else {
             eprintln!("  warning: {} not found in gist", entry.gist);
             continue;
@@ -391,7 +400,7 @@ pub fn do_restore(
         restored += 1;
     }
 
-    println!("Summary: {restored} restored");
+    println!("Summary: {restored} restored, {in_sync} already in sync");
     print_gist_url(id, is_gist_private(client, id)?);
 
     Ok(())
