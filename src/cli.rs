@@ -31,6 +31,11 @@ pub enum Command {
         /// Files to sync, relative to root
         files: Vec<String>,
     },
+    /// Report what sync would do without making any changes
+    Status {
+        /// Files to check, relative to root (default: all tracked files)
+        files: Vec<String>,
+    },
     /// Overwrite local files with the gist version, ignoring mtime
     Restore {
         /// Files to restore, relative to root (default: all tracked files)

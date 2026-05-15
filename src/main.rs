@@ -39,6 +39,9 @@ fn main() -> Result<()> {
         Some(Command::Sync { files }) => {
             sync::do_sync(&client, &config, &files, gist_id.as_deref())?;
         }
+        Some(Command::Status { files }) => {
+            sync::do_status(&client, &config, &files, gist_id.as_deref())?;
+        }
         Some(Command::Restore { files }) => {
             sync::do_restore(&client, &config, &files, gist_id.as_deref())?;
         }

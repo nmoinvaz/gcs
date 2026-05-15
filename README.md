@@ -28,6 +28,7 @@ gcs [options] [command] [files...]
 | `open` | Open the project's gist in a web browser |
 | `remove <files>` | Remove files from the tracked set and delete from gist |
 | `restore <files>` | Overwrite local files with the gist version, ignoring mtime |
+| `status [files]` | Report what sync would do without making any changes |
 | `sync` | Sync files with the gist (default) |
 
 ### Options

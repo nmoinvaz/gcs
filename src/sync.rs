@@ -145,56 +145,56 @@ fn remove_stale_files(
     Ok(())
 }
 
-// -------------------------------------------------------------------------
-//  sync
-// -------------------------------------------------------------------------
-
-pub fn do_sync(
-    client: &GistClient,
+/// Resolve optional command-line file arguments into a focus set.
+///
+/// Files listed must already be tracked; adding new files is `gcs add`.
+/// Returns `None` when no files were given, meaning "all tracked files".
+fn parse_focus(
     config: &ProjectConfig,
+    manifest: &Manifest,
     arg_files: &[String],
-    gist_id: Option<&str>,
-) -> Result<()> {
-    // No gist yet: create one from the files supplied on the command line.
-    let Some(id) = gist_id else {
-        return create_new_gist(client, config, arg_files);
-    };
-
-    let mut manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
-
-    // Optionally narrow the sync to a specific subset. Files listed on the
-    // command line must already be tracked — adding new files is `gcs add`.
-    let focus: Option<HashSet<String>> = if arg_files.is_empty() {
-        None
-    } else {
-        let tracked: HashSet<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
-        let mut set = HashSet::new();
-        for f in arg_files {
-            let norm = config.relative_path(f);
-            if !tracked.contains(&norm) {
-                anyhow::bail!("{norm} is not tracked. Use `gcs add` to track new files.");
-            }
-            set.insert(norm);
-        }
-        Some(set)
-    };
-
-    let current = current_platform();
-
-    // Classify each relevant manifest entry as push, pull, or in-sync.
-    enum Action {
-        Push(DateTime<Utc>),
-        Pull,
-        InSync,
+) -> Result<Option<HashSet<String>>> {
+    if arg_files.is_empty() {
+        return Ok(None);
     }
+    let tracked: HashSet<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
+    let mut set = HashSet::new();
+    for f in arg_files {
+        let norm = config.relative_path(f);
+        if !tracked.contains(&norm) {
+            anyhow::bail!("{norm} is not tracked. Use `gcs add` to track new files.");
+        }
+        set.insert(norm);
+    }
+    Ok(Some(set))
+}
 
-    let mut plan: Vec<(usize, Action)> = Vec::new();
+/// The action sync would take for a single manifest entry.
+enum Action {
+    Push(DateTime<Utc>),
+    Pull,
+    InSync,
+}
+
+/// Classify each platform-relevant manifest entry into a sync action.
+///
+/// Skips entries for other platforms and, when `focus` is set, entries
+/// outside the focus set. Returns the index into `manifest.files` alongside
+/// the action so callers can mutate or report on the entry.
+fn build_plan(
+    config: &ProjectConfig,
+    manifest: &Manifest,
+    focus: &Option<HashSet<String>>,
+) -> Vec<(usize, Action)> {
+    let current = current_platform();
+    let mut plan = Vec::new();
     for (idx, entry) in manifest.files.iter().enumerate() {
-        let platform_match = entry.platform.is_none() || entry.platform.as_deref() == Some(current);
+        let platform_match =
+            entry.platform.is_none() || entry.platform.as_deref() == Some(current);
         if !platform_match {
             continue;
         }
-        if let Some(ref focus) = focus {
+        if let Some(focus) = focus {
             if !focus.contains(&entry.path) {
                 continue;
             }
@@ -215,6 +215,30 @@ pub fn do_sync(
         };
         plan.push((idx, action));
     }
+    plan
+}
+
+// -------------------------------------------------------------------------
+//  sync
+// -------------------------------------------------------------------------
+
+pub fn do_sync(
+    client: &GistClient,
+    config: &ProjectConfig,
+    arg_files: &[String],
+    gist_id: Option<&str>,
+) -> Result<()> {
+    // No gist yet: create one from the files supplied on the command line.
+    let Some(id) = gist_id else {
+        return create_new_gist(client, config, arg_files);
+    };
+
+    let mut manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+
+    // Optionally narrow the sync to a specific subset.
+    let focus = parse_focus(config, &manifest, arg_files)?;
+
+    let plan = build_plan(config, &manifest, &focus);
 
     let mut push_indices: Vec<(usize, DateTime<Utc>)> = Vec::new();
     let mut pull_indices: Vec<usize> = Vec::new();
@@ -328,6 +352,77 @@ fn create_new_gist(
 }
 
 // -------------------------------------------------------------------------
+//  status
+// -------------------------------------------------------------------------
+
+/// Report what `sync` would do, without touching local files or the gist.
+pub fn do_status(
+    client: &GistClient,
+    config: &ProjectConfig,
+    arg_files: &[String],
+    gist_id: Option<&str>,
+) -> Result<()> {
+    let Some(id) = gist_id else {
+        println!("No gist exists for this project. `gcs sync FILE...` would create one.");
+        return Ok(());
+    };
+
+    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    let focus = parse_focus(config, &manifest, arg_files)?;
+    let plan = build_plan(config, &manifest, &focus);
+
+    let mut push = 0usize;
+    let mut pull = 0usize;
+    let mut in_sync = 0usize;
+    for (idx, action) in &plan {
+        let entry = &manifest.files[*idx];
+        match action {
+            Action::Push(_) => {
+                println!("  push  {} (local newer)", entry.path);
+                push += 1;
+            }
+            Action::Pull => {
+                let reason = if local_mtime(config, &entry.path).is_none() {
+                    "missing locally"
+                } else {
+                    "gist newer"
+                };
+                println!("  pull  {} ({reason})", entry.path);
+                pull += 1;
+            }
+            Action::InSync => in_sync += 1,
+        }
+    }
+
+    // Files present in the gist but absent from the manifest. `sync` leaves
+    // these alone; `gcs cleanup` removes them.
+    let gist = client.get_gist(id)?;
+    let mut expected: HashSet<String> = HashSet::new();
+    expected.insert(config.manifest_name());
+    for entry in &manifest.files {
+        expected.insert(entry.gist.clone());
+    }
+    let mut stale = 0usize;
+    for name in client.get_file_names(&gist) {
+        if !expected.contains(&name) {
+            println!("  stale {name} (not in manifest, run `gcs cleanup`)");
+            stale += 1;
+        }
+    }
+
+    if push == 0 && pull == 0 && stale == 0 {
+        println!("Everything is in sync ({in_sync} file(s)).");
+    } else {
+        println!(
+            "Summary: {push} to push, {pull} to pull, {in_sync} in sync, {stale} stale"
+        );
+    }
+    print_gist_url(id, is_gist_private(client, id)?);
+
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
 //  restore
 // -------------------------------------------------------------------------
 
@@ -340,20 +435,7 @@ pub fn do_restore(
     let id = gist_id.context("No gist found for this project")?;
     let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
 
-    let focus: Option<HashSet<String>> = if arg_files.is_empty() {
-        None
-    } else {
-        let tracked: HashSet<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
-        let mut set = HashSet::new();
-        for f in arg_files {
-            let norm = config.relative_path(f);
-            if !tracked.contains(&norm) {
-                anyhow::bail!("{norm} is not tracked. Use `gcs add` to track new files.");
-            }
-            set.insert(norm);
-        }
-        Some(set)
-    };
+    let focus = parse_focus(config, &manifest, arg_files)?;
 
     let current = current_platform();
     let targets: Vec<&ManifestFile> = manifest
