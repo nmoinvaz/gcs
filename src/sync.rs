@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -52,24 +53,22 @@ fn check_secrets(config: &ProjectConfig, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Read the manifest from an existing gist.
+/// Read the manifest from an already-fetched gist response.
 fn read_manifest(
     client: &GistClient,
-    gist_id: &str,
+    gist: &Value,
     config: &ProjectConfig,
 ) -> Result<Option<Manifest>> {
-    let gist = client.get_gist(gist_id)?;
     let manifest_name = config.manifest_name();
-    match client.get_file_content(&gist, &manifest_name) {
+    match client.get_file_content(gist, &manifest_name) {
         Some(yaml) => Ok(Manifest::from_yaml(yaml)),
         None => Ok(None),
     }
 }
 
 /// Check whether a gist is private (i.e. not public).
-fn is_gist_private(client: &GistClient, gist_id: &str) -> Result<bool> {
-    let gist = client.get_gist(gist_id)?;
-    Ok(!gist["public"].as_bool().unwrap_or(true))
+fn is_gist_private(gist: &Value) -> bool {
+    !gist["public"].as_bool().unwrap_or(true)
 }
 
 /// Print the gist URL, marking private gists.
@@ -119,11 +118,11 @@ fn build_file_map(
 fn remove_stale_files(
     client: &GistClient,
     gist_id: &str,
+    gist: &Value,
     config: &ProjectConfig,
     paths: &[String],
 ) -> Result<()> {
-    let gist = client.get_gist(gist_id)?;
-    let remote_files = client.get_file_names(&gist);
+    let remote_files = client.get_file_names(gist);
 
     let mut expected: HashSet<String> = HashSet::new();
     expected.insert(config.manifest_name());
@@ -233,7 +232,11 @@ pub fn do_sync(
         return create_new_gist(client, config, arg_files);
     };
 
-    let mut manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    // Fetch the gist once. Using a single snapshot for the manifest and the
+    // pulled file contents keeps them consistent if the gist changes mid-run.
+    let gist = client.get_gist(id)?;
+    let mut manifest =
+        read_manifest(client, &gist, config)?.context("No manifest found in gist")?;
 
     // Optionally narrow the sync to a specific subset.
     let focus = parse_focus(config, &manifest, arg_files)?;
@@ -253,7 +256,6 @@ pub fn do_sync(
 
     // Pull first so a failed push doesn't leave local out of date.
     if !pull_indices.is_empty() {
-        let gist = client.get_gist(id)?;
         for idx in &pull_indices {
             let entry = &manifest.files[*idx];
             let Some(content) = client.get_file_content(&gist, &entry.gist) else {
@@ -302,7 +304,7 @@ pub fn do_sync(
         pull_indices.len(),
         in_sync_count
     );
-    print_gist_url(id, is_gist_private(client, id)?);
+    print_gist_url(id, is_gist_private(&gist));
 
     Ok(())
 }
@@ -367,7 +369,9 @@ pub fn do_status(
         return Ok(());
     };
 
-    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    let gist = client.get_gist(id)?;
+    let manifest =
+        read_manifest(client, &gist, config)?.context("No manifest found in gist")?;
     let focus = parse_focus(config, &manifest, arg_files)?;
     let plan = build_plan(config, &manifest, &focus);
 
@@ -396,7 +400,6 @@ pub fn do_status(
 
     // Files present in the gist but absent from the manifest. `sync` leaves
     // these alone; `gcs cleanup` removes them.
-    let gist = client.get_gist(id)?;
     let mut expected: HashSet<String> = HashSet::new();
     expected.insert(config.manifest_name());
     for entry in &manifest.files {
@@ -417,7 +420,7 @@ pub fn do_status(
             "Summary: {push} to push, {pull} to pull, {in_sync} in sync, {stale} stale"
         );
     }
-    print_gist_url(id, is_gist_private(client, id)?);
+    print_gist_url(id, is_gist_private(&gist));
 
     Ok(())
 }
@@ -433,7 +436,9 @@ pub fn do_restore(
     gist_id: Option<&str>,
 ) -> Result<()> {
     let id = gist_id.context("No gist found for this project")?;
-    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    let gist = client.get_gist(id)?;
+    let manifest =
+        read_manifest(client, &gist, config)?.context("No manifest found in gist")?;
 
     let focus = parse_focus(config, &manifest, arg_files)?;
 
@@ -454,7 +459,6 @@ pub fn do_restore(
         return Ok(());
     }
 
-    let gist = client.get_gist(id)?;
     let mut restored = 0usize;
     let mut in_sync = 0usize;
     for entry in &targets {
@@ -483,7 +487,7 @@ pub fn do_restore(
     }
 
     println!("Summary: {restored} restored, {in_sync} already in sync");
-    print_gist_url(id, is_gist_private(client, id)?);
+    print_gist_url(id, is_gist_private(&gist));
 
     Ok(())
 }
@@ -509,13 +513,18 @@ pub fn do_add(
         None
     };
 
+    // Fetch the existing gist once, if there is one.
+    let gist = match gist_id {
+        Some(id) => Some(client.get_gist(id)?),
+        None => None,
+    };
+
     // Start with existing manifest entries, then merge new ones.
-    let mut entries: Vec<ManifestFile> = if let Some(id) = gist_id {
-        read_manifest(client, id, config)?
+    let mut entries: Vec<ManifestFile> = match &gist {
+        Some(g) => read_manifest(client, g, config)?
             .map(|m| m.files)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+            .unwrap_or_default(),
+        None => Vec::new(),
     };
 
     let existing_paths: HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
@@ -532,7 +541,7 @@ pub fn do_add(
     let manifest = Manifest::new(config, &entries);
     check_secrets(config, &added)?;
 
-    if let Some(id) = gist_id {
+    if let (Some(id), Some(gist)) = (gist_id, &gist) {
         let mut updates: HashMap<String, Option<String>> = HashMap::new();
         updates.insert(config.manifest_name(), Some(manifest.to_yaml()));
         for f in &added {
@@ -548,7 +557,7 @@ pub fn do_add(
             }
         }
         client.update_files(id, &updates)?;
-        print_gist_url(id, is_gist_private(client, id)?);
+        print_gist_url(id, is_gist_private(gist));
     } else {
         let local_files: Vec<String> = added
             .iter()
@@ -583,8 +592,9 @@ pub fn do_remove(
     }
 
     let id = gist_id.context("No gist found")?;
-
-    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    let gist = client.get_gist(id)?;
+    let manifest =
+        read_manifest(client, &gist, config)?.context("No manifest found in gist")?;
 
     let remove_set: HashSet<String> = files.iter().map(|f| config.relative_path(f)).collect();
 
@@ -603,7 +613,7 @@ pub fn do_remove(
     updates.insert(config.manifest_name(), Some(new_manifest.to_yaml()));
 
     client.update_files(id, &updates)?;
-    print_gist_url(id, is_gist_private(client, id)?);
+    print_gist_url(id, is_gist_private(&gist));
 
     Ok(())
 }
@@ -618,10 +628,12 @@ pub fn do_cleanup(
     gist_id: Option<&str>,
 ) -> Result<()> {
     let id = gist_id.context("No gist found")?;
-    let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
+    let gist = client.get_gist(id)?;
+    let manifest =
+        read_manifest(client, &gist, config)?.context("No manifest found in gist")?;
     let paths = manifest.paths();
-    remove_stale_files(client, id, config, &paths)?;
-    print_gist_url(id, is_gist_private(client, id)?);
+    remove_stale_files(client, id, &gist, config, &paths)?;
+    print_gist_url(id, is_gist_private(&gist));
     Ok(())
 }
 
