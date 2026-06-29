@@ -50,15 +50,20 @@ impl ProjectConfig {
 
     /// Convert a local path to a gist-safe filename using _ as directory separator.
     ///
-    /// A platform-specific file gets the platform appended so variants of the
-    /// same path (e.g. macos vs windows) map to distinct gist files instead of
-    /// clobbering each other.
+    /// A platform-specific file gets a `[platform]` tag inserted before the
+    /// extension so variants of the same path (e.g. macos vs windows) map to
+    /// distinct gist files without mangling the extension
+    /// (`name_dir_settings[macos].json`).
     pub fn gist_filename(&self, path: &str, platform: Option<&str>) -> String {
         let normalized = path.strip_prefix("./").unwrap_or(path);
         let base = format!("{}_{}", self.name, normalized.replace('/', "_"));
-        match platform {
-            Some(p) => format!("{base}_{p}"),
-            None => base,
+        let Some(p) = platform else { return base };
+        match Path::new(normalized).extension().and_then(|e| e.to_str()) {
+            Some(ext) => {
+                let stem = base.strip_suffix(&format!(".{ext}")).unwrap_or(&base);
+                format!("{stem}[{p}].{ext}")
+            }
+            None => format!("{base}[{p}]"),
         }
     }
 
@@ -149,12 +154,18 @@ mod tests {
     }
 
     #[test]
-    fn gist_filename_appends_platform() {
+    fn gist_filename_tags_platform_before_extension() {
         let c = config();
         assert_eq!(
             c.gist_filename(".vscode/cmake-variants.yaml", Some("macos")),
-            "proj_.vscode_cmake-variants.yaml_macos"
+            "proj_.vscode_cmake-variants[macos].yaml"
         );
+    }
+
+    #[test]
+    fn gist_filename_tags_platform_when_no_extension() {
+        let c = config();
+        assert_eq!(c.gist_filename("Makefile", Some("linux")), "proj_Makefile[linux]");
     }
 
     #[test]

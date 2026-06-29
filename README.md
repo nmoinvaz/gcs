@@ -95,8 +95,9 @@ Before pushing files to a gist, `gcs` scans them for potential secrets
 Each project gets a single gist identified by the description
 `"<project> config-sync"`. Files are stored with underscores replacing
 path separators (`zlib-ng_.vscode_settings.json`); platform-specific
-files append the platform (`zlib-ng_.vscode_settings.json_macos`) so
-variants of one path never collide. A manifest file
+files tag the platform before the extension
+(`zlib-ng_.vscode_settings[macos].json`) so variants of one path
+never collide. A manifest file
 (`.zlib-ng-config-sync.yaml`) in the gist records the mapping between
 local paths and gist filenames.
 
