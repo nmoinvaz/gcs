@@ -47,7 +47,7 @@ impl Manifest {
     ) -> ManifestFile {
         ManifestFile {
             path: path.to_string(),
-            gist: config.gist_filename(path),
+            gist: config.gist_filename(path, platform),
             platform: platform.map(|s| s.to_string()),
             updated_at,
         }
@@ -59,11 +59,6 @@ impl Manifest {
 
     pub fn from_yaml(yaml: &str) -> Option<Self> {
         serde_yaml::from_str(yaml).ok()
-    }
-
-    /// All paths in the manifest.
-    pub fn paths(&self) -> Vec<String> {
-        self.files.iter().map(|f| f.path.clone()).collect()
     }
 }
 

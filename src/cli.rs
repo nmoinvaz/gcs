@@ -52,6 +52,10 @@ pub enum Command {
     },
     /// Remove files from the tracked set and delete from gist
     Remove {
+        /// Only remove the variant specific to the current platform
+        #[arg(long)]
+        platform: bool,
+
         /// Files to remove, relative to root
         files: Vec<String>,
     },

@@ -26,7 +26,7 @@ gcs [options] [command] [files...]
 | `cleanup` | Remove gist files not listed in the manifest |
 | `delete` | Delete the entire config gist |
 | `open` | Open the project's gist in a web browser |
-| `remove <files>` | Remove files from the tracked set and delete from gist |
+| `remove [--platform] <files>` | Remove files from the tracked set and delete from gist |
 | `restore <files>` | Overwrite local files with the gist version, ignoring mtime |
 | `status [files]` | Report what sync would do without making any changes |
 | `sync` | Sync files with the gist (default) |
@@ -69,6 +69,10 @@ gcs add --platform .vscode/cmake-variants.yaml
 The manifest records the platform automatically. When syncing on a
 different OS, platform-specific files are skipped.
 
+The same path may carry a separate variant per platform. Run the same
+`add --platform` on each OS and each keeps its own content in the gist;
+sync only ever touches the variant for the platform it runs on.
+
 Stop tracking a file:
 
 ```
@@ -90,7 +94,9 @@ Before pushing files to a gist, `gcs` scans them for potential secrets
 
 Each project gets a single gist identified by the description
 `"<project> config-sync"`. Files are stored with underscores replacing
-path separators (`zlib-ng_.vscode_settings.json`). A manifest file
+path separators (`zlib-ng_.vscode_settings.json`); platform-specific
+files append the platform (`zlib-ng_.vscode_settings.json_macos`) so
+variants of one path never collide. A manifest file
 (`.zlib-ng-config-sync.yaml`) in the gist records the mapping between
 local paths and gist filenames.
 

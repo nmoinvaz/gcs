@@ -49,9 +49,17 @@ impl ProjectConfig {
     }
 
     /// Convert a local path to a gist-safe filename using _ as directory separator.
-    pub fn gist_filename(&self, path: &str) -> String {
+    ///
+    /// A platform-specific file gets the platform appended so variants of the
+    /// same path (e.g. macos vs windows) map to distinct gist files instead of
+    /// clobbering each other.
+    pub fn gist_filename(&self, path: &str, platform: Option<&str>) -> String {
         let normalized = path.strip_prefix("./").unwrap_or(path);
-        format!("{}_{}", self.name, normalized.replace('/', "_"))
+        let base = format!("{}_{}", self.name, normalized.replace('/', "_"));
+        match platform {
+            Some(p) => format!("{base}_{p}"),
+            None => base,
+        }
     }
 
     pub fn repo_url(&self) -> Option<String> {
@@ -117,4 +125,46 @@ pub fn get_github_token() -> Result<String> {
     }
 
     anyhow::bail!("No GitHub token found. Run `gh auth login` or set GITHUB_TOKEN.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> ProjectConfig {
+        ProjectConfig {
+            root: PathBuf::from("/tmp/proj"),
+            name: "proj".to_string(),
+            public: true,
+        }
+    }
+
+    #[test]
+    fn gist_filename_flattens_path_separators() {
+        let c = config();
+        assert_eq!(
+            c.gist_filename(".vscode/settings.json", None),
+            "proj_.vscode_settings.json"
+        );
+    }
+
+    #[test]
+    fn gist_filename_appends_platform() {
+        let c = config();
+        assert_eq!(
+            c.gist_filename(".vscode/cmake-variants.yaml", Some("macos")),
+            "proj_.vscode_cmake-variants.yaml_macos"
+        );
+    }
+
+    #[test]
+    fn platform_variants_of_same_path_do_not_collide() {
+        let c = config();
+        let mac = c.gist_filename(".vscode/cmake-variants.yaml", Some("macos"));
+        let win = c.gist_filename(".vscode/cmake-variants.yaml", Some("windows"));
+        let generic = c.gist_filename(".vscode/cmake-variants.yaml", None);
+        assert_ne!(mac, win);
+        assert_ne!(mac, generic);
+        assert_ne!(win, generic);
+    }
 }

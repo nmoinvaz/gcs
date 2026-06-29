@@ -98,18 +98,17 @@ fn set_local_mtime(path: &Path, time: DateTime<Utc>) -> Result<()> {
     Ok(())
 }
 
-/// Build the file map for creating or pushing to a gist.
-fn build_file_map(
-    config: &ProjectConfig,
-    paths: &[String],
-    manifest: &Manifest,
-) -> HashMap<String, String> {
+/// Build the file map for creating a gist from the manifest's entries.
+///
+/// Keys each file by the entry's stored gist name so platform variants of the
+/// same path stay distinct. Entries with no readable local file are skipped.
+fn build_file_map(config: &ProjectConfig, manifest: &Manifest) -> HashMap<String, String> {
     let mut files = HashMap::new();
     files.insert(config.manifest_name(), manifest.to_yaml());
-    for path in paths {
-        let full = config.root.join(path);
+    for entry in &manifest.files {
+        let full = config.root.join(&entry.path);
         if let Ok(content) = fs::read_to_string(&full) {
-            files.insert(config.gist_filename(path), content);
+            files.insert(entry.gist.clone(), content);
         }
     }
     files
@@ -120,15 +119,15 @@ fn remove_stale_files(
     client: &GistClient,
     gist_id: &str,
     config: &ProjectConfig,
-    paths: &[String],
+    manifest: &Manifest,
 ) -> Result<()> {
     let gist = client.get_gist(gist_id)?;
     let remote_files = client.get_file_names(&gist);
 
     let mut expected: HashSet<String> = HashSet::new();
     expected.insert(config.manifest_name());
-    for path in paths {
-        expected.insert(config.gist_filename(path));
+    for entry in &manifest.files {
+        expected.insert(entry.gist.clone());
     }
 
     let mut deletions: HashMap<String, Option<String>> = HashMap::new();
@@ -339,7 +338,7 @@ fn create_new_gist(
     }
 
     check_secrets(config, &local_files)?;
-    let files = build_file_map(config, &local_files, &manifest);
+    let files = build_file_map(config, &manifest);
     println!("Creating gist: {}", config.gist_description());
     let id = client.create_gist(&config.gist_description(), config.public, &files)?;
     println!(
@@ -518,49 +517,76 @@ pub fn do_add(
         Vec::new()
     };
 
-    let existing_paths: HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
-    let mut added = Vec::new();
+    // An entry is identified by (path, platform): the same path may carry one
+    // entry per platform. Newly created entries accumulate in `added`.
+    let platform_str = platform.map(|s| s.to_string());
+    let mut added: Vec<ManifestFile> = Vec::new();
     for f in files {
         let normalized = config.relative_path(f);
-        if !existing_paths.contains(&normalized) {
-            let ts = local_mtime(config, &normalized).unwrap_or_else(Utc::now);
-            entries.push(Manifest::entry(config, &normalized, platform, ts));
-            added.push(normalized);
+
+        // Already tracked for this exact platform scope, nothing to do.
+        if entries
+            .iter()
+            .chain(added.iter())
+            .any(|e| e.path == normalized && e.platform == platform_str)
+        {
+            println!("  skipped {normalized} (already tracked)");
+            continue;
         }
+        // A platform-agnostic entry and a platform-specific one for the same
+        // path would both match on sync. Reject the mix instead.
+        if entries.iter().chain(added.iter()).any(|e| e.path == normalized) {
+            anyhow::bail!(
+                "{normalized} is already tracked with a different platform scope. \
+                 Run `gcs remove {normalized}` first to change it."
+            );
+        }
+
+        let ts = local_mtime(config, &normalized).unwrap_or_else(Utc::now);
+        added.push(Manifest::entry(config, &normalized, platform, ts));
     }
 
+    if added.is_empty() {
+        return Ok(());
+    }
+
+    entries.extend(added.iter().cloned());
     let manifest = Manifest::new(config, &entries);
-    check_secrets(config, &added)?;
+    let added_paths: Vec<String> = added.iter().map(|e| e.path.clone()).collect();
+    check_secrets(config, &added_paths)?;
 
     if let Some(id) = gist_id {
         let mut updates: HashMap<String, Option<String>> = HashMap::new();
         updates.insert(config.manifest_name(), Some(manifest.to_yaml()));
-        for f in &added {
-            let full = config.root.join(f);
+        for entry in &added {
+            let full = config.root.join(&entry.path);
+            let suffix = entry
+                .platform
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
             if full.is_file() {
-                let content =
-                    fs::read_to_string(&full).with_context(|| format!("Failed to read {f}"))?;
-                updates.insert(config.gist_filename(f), Some(content));
-                let suffix = platform.map(|p| format!(" ({p})")).unwrap_or_default();
-                println!("  added {f}{suffix}");
+                let content = fs::read_to_string(&full)
+                    .with_context(|| format!("Failed to read {}", entry.path))?;
+                updates.insert(entry.gist.clone(), Some(content));
+                println!("  added {}{suffix}", entry.path);
             } else {
-                println!("  skipped {f} (not found locally)");
+                println!("  skipped {} (not found locally)", entry.path);
             }
         }
         client.update_files(id, &updates)?;
         print_gist_url(id, is_gist_private(client, id)?);
     } else {
-        let local_files: Vec<String> = added
-            .iter()
-            .filter(|p| config.root.join(p).is_file())
-            .cloned()
-            .collect();
-        let file_map = build_file_map(config, &local_files, &manifest);
+        let file_map = build_file_map(config, &manifest);
         println!("Creating gist: {}", config.gist_description());
         let id = client.create_gist(&config.gist_description(), config.public, &file_map)?;
-        for f in &added {
-            let suffix = platform.map(|p| format!(" ({p})")).unwrap_or_default();
-            println!("  added {f}{suffix}");
+        for entry in &added {
+            let suffix = entry
+                .platform
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
+            println!("  added {}{suffix}", entry.path);
         }
         print_gist_url(&id, !config.public);
     }
@@ -576,6 +602,7 @@ pub fn do_remove(
     client: &GistClient,
     config: &ProjectConfig,
     files: &[String],
+    platform_specific: bool,
     gist_id: Option<&str>,
 ) -> Result<()> {
     if files.is_empty() {
@@ -588,16 +615,32 @@ pub fn do_remove(
 
     let remove_set: HashSet<String> = files.iter().map(|f| config.relative_path(f)).collect();
 
-    let remaining: Vec<ManifestFile> = manifest
-        .files
-        .into_iter()
-        .filter(|e| !remove_set.contains(&e.path))
-        .collect();
+    // Without --platform, removing by path drops every variant of that path.
+    // With it, only the variant scoped to the current platform is removed.
+    // Either way, delete each matched entry's stored gist file.
+    let current = current_platform();
+    let (removed, remaining): (Vec<ManifestFile>, Vec<ManifestFile>) =
+        manifest.files.into_iter().partition(|e| {
+            remove_set.contains(&e.path)
+                && (!platform_specific || e.platform.as_deref() == Some(current))
+        });
+
+    if removed.is_empty() {
+        if platform_specific {
+            anyhow::bail!("None of the given files are tracked for {current}.");
+        }
+        anyhow::bail!("None of the given files are tracked.");
+    }
 
     let mut updates: HashMap<String, Option<String>> = HashMap::new();
-    for f in &remove_set {
-        updates.insert(config.gist_filename(f), None);
-        println!("  removed {f}");
+    for entry in &removed {
+        updates.insert(entry.gist.clone(), None);
+        let suffix = entry
+            .platform
+            .as_deref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default();
+        println!("  removed {}{suffix}", entry.path);
     }
     let new_manifest = Manifest::new(config, &remaining);
     updates.insert(config.manifest_name(), Some(new_manifest.to_yaml()));
@@ -619,8 +662,7 @@ pub fn do_cleanup(
 ) -> Result<()> {
     let id = gist_id.context("No gist found")?;
     let manifest = read_manifest(client, id, config)?.context("No manifest found in gist")?;
-    let paths = manifest.paths();
-    remove_stale_files(client, id, config, &paths)?;
+    remove_stale_files(client, id, config, &manifest)?;
     print_gist_url(id, is_gist_private(client, id)?);
     Ok(())
 }
